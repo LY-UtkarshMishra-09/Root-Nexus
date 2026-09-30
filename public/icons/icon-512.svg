@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="nexus-bg-lg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#18181b"/>
+      <stop offset="100%" stop-color="#09090b"/>
+    </linearGradient>
+    <linearGradient id="nexus-glow-lg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+    <filter id="aura" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#nexus-bg-lg)" stroke="#27272a" stroke-width="8"/>
+  <circle cx="256" cy="256" r="148" fill="none" stroke="url(#nexus-glow-lg)" stroke-width="12" opacity="0.35"/>
+  <path d="M256 128 L368 332 L144 332 Z" fill="none" stroke="url(#nexus-glow-lg)" stroke-width="16" stroke-linejoin="round" stroke-linecap="round" filter="url(#aura)"/>
+  <circle cx="256" cy="264" r="36" fill="url(#nexus-glow-lg)"/>
+</svg>
+
