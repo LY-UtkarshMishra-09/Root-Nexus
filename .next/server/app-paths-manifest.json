@@ -1,0 +1,4 @@
+{
+  "/attendance/page": "app/attendance/page.js",
+  "/api/webkiosk/captcha/route": "app/api/webkiosk/captcha/route.js"
+}
