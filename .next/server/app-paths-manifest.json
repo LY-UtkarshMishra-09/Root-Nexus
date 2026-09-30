@@ -1,4 +1,7 @@
 {
   "/attendance/page": "app/attendance/page.js",
-  "/api/webkiosk/captcha/route": "app/api/webkiosk/captcha/route.js"
+  "/account/page": "app/account/page.js",
+  "/food/page": "app/food/page.js",
+  "/calendar/page": "app/calendar/page.js",
+  "/marks/page": "app/marks/page.js"
 }

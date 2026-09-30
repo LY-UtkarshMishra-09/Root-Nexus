@@ -589,21 +589,30 @@ export default function WebkioskSyncModal({ isOpen, onClose, currentSubjects, on
                 </div>
 
                 <div className="divide-y divide-zinc-800/60 text-xs max-h-64 overflow-y-auto">
-                  {syncResult.subjects.map((sub) => {
-                    const current = currentSubjects.find((s) => s.code === sub.code || s.id === sub.id);
-                    const pct = sub.percentage || ((sub.attended / sub.total) * 100).toFixed(1);
-                    const isSafe = pct >= 75;
+                  {syncResult.subjects.map((sub, idx) => {
+                    const current = currentSubjects.find(
+                      (s) =>
+                        (s?.code && sub?.code && String(s.code).toUpperCase() === String(sub.code).toUpperCase()) ||
+                        (s?.id && s.id === sub?.id)
+                    );
+                    const att = Number(sub?.attended) || 0;
+                    const tot = Number(sub?.total) || 0;
+                    const pctVal = sub?.percentage != null
+                      ? parseFloat(sub.percentage)
+                      : (tot > 0 ? (att / tot) * 100 : 100);
+                    const pct = isNaN(pctVal) ? '100.0' : pctVal.toFixed(1);
+                    const isSafe = parseFloat(pct) >= 75;
 
                     return (
-                      <div key={sub.code} className="p-3 flex items-center justify-between gap-4 hover:bg-zinc-900/40">
+                      <div key={sub?.code || `sync-sub-${idx}`} className="p-3 flex items-center justify-between gap-4 hover:bg-zinc-900/40">
                         <div>
                           <div className="flex items-center gap-2">
                             <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
-                              {sub.code}
+                              {sub?.code || 'COURSE'}
                             </span>
-                            <span className="font-bold text-white text-[11px]">{sub.shortName || sub.name}</span>
+                            <span className="font-bold text-white text-[11px]">{sub?.shortName || sub?.name || sub?.code}</span>
                           </div>
-                          {(sub.lecturePercent != null || sub.tutorialPercent != null || sub.practicalPercent != null) && (
+                          {(sub?.lecturePercent != null || sub?.tutorialPercent != null || sub?.practicalPercent != null) && (
                             <div className="flex items-center gap-1.5 mt-1 text-[10px] font-mono text-zinc-400">
                               {sub.lecturePercent != null && <span>L: {sub.lecturePercent}%</span>}
                               {sub.tutorialPercent != null && <span>• T: {sub.tutorialPercent}%</span>}
@@ -612,15 +621,19 @@ export default function WebkioskSyncModal({ isOpen, onClose, currentSubjects, on
                           )}
                           {current && (
                             <span className="text-[10px] text-zinc-500 mt-0.5 block">
-                              Previous: {current.attended}/{current.total} ({((current.attended / current.total) * 100).toFixed(1)}%)
+                              Previous: {current.attended}/{current.total} (
+                              {current.total > 0
+                                ? ((Number(current.attended) / Number(current.total)) * 100).toFixed(1)
+                                : '100.0'}
+                              %)
                             </span>
                           )}
                         </div>
 
                         <div className="text-right shrink-0">
                           <div className="flex items-baseline gap-1 justify-end font-mono">
-                            <span className="font-bold text-white">{sub.attended}</span>
-                            <span className="text-zinc-500">/ {sub.total}</span>
+                            <span className="font-bold text-white">{att}</span>
+                            <span className="text-zinc-500">/ {tot}</span>
                           </div>
                           <span
                             className={`text-[10px] font-semibold px-2 py-0.5 rounded-full inline-block mt-0.5 ${

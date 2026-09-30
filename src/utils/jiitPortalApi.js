@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { getCourseMetadata } from './webkioskParser.js';
 
 const API_BASE_URL = 'https://webportal.jiit.ac.in:6011/StudentPortalAPI';
 const IV = Buffer.from('dcek9wb8frty1pnm', 'utf8');
@@ -212,18 +213,21 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
       token,
     });
 
-    const header = metaResp?.response?.headerlist?.[0];
-    const semesters = metaResp?.response?.semlist || [];
+    const header = metaResp?.response?.headerlist?.[0] || metaResp?.response?.header || {};
+    const semesters = metaResp?.response?.semlist || metaResp?.response?.semesters || [];
 
-    if (header && semesters.length > 0) {
-      for (const sem of semesters) {
+    if (semesters.length > 0) {
+      // Loop from the latest registered semester backwards
+      const reversedSemesters = [...semesters].reverse();
+      for (const sem of reversedSemesters) {
         try {
+          const styNum = sem.stynumber || header.stynumber || studentInfo.semester || '1';
           const attendPayload = serializePayload({
             clientid: clientId,
             instituteid: instituteId,
             registrationcode: sem.registrationcode,
             registrationid: sem.registrationid,
-            stynumber: header.stynumber,
+            stynumber: styNum,
           });
 
           const attendResp = await hitApi('/StudentClassAttendance/getstudentattendancedetail', {
@@ -233,43 +237,53 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
           });
 
           const rawList = attendResp?.response?.studentattendancelist || [];
-          if (rawList.length > 0) {
+          if (Array.isArray(rawList) && rawList.length > 0) {
             subjects = rawList.map((item, idx) => {
-              const code = (item.subjectcode || `SUB${idx + 1}`).trim();
-              const name = (item.subjectdesc || code).trim();
-              const overallPercent = parseFloat(item.LTpercantage || item.totalpercentage || 0);
+              const code = String(item.subjectcode || item.coursecode || item.code || `SUB${idx + 1}`).trim().toUpperCase();
+              const name = String(item.subjectdesc || item.subjectname || item.coursename || code).trim();
+              const meta = getCourseMetadata(code, name);
+              const overallPercent = parseFloat(item.LTpercantage || item.totalpercentage || item.percentage || 0);
 
-              const lecturePercent = item.Lpercentage ? parseFloat(item.Lpercentage) : null;
-              const tutorialPercent = item.Tpercentage ? parseFloat(item.Tpercentage) : null;
-              const practicalPercent = item.Ppercentage ? parseFloat(item.Ppercentage) : null;
+              const lecturePercent = item.Lpercentage != null ? parseFloat(item.Lpercentage) : null;
+              const tutorialPercent = item.Tpercentage != null ? parseFloat(item.Tpercentage) : null;
+              const practicalPercent = item.Ppercentage != null ? parseFloat(item.Ppercentage) : null;
 
-              let total = parseInt(item.totalclass || item.totalclasses || item.Ltotal || item.total || 0);
-              let attended = parseInt(item.totalpresent || item.present || item.Lattended || item.attended || 0);
+              let total = parseInt(item.totalclass || item.totalclasses || item.Ltotal || item.total || 0, 10);
+              let attended = parseInt(item.totalpresent || item.present || item.Lattended || item.attended || 0, 10);
 
-              if (!total || total === 0) {
+              if (isNaN(total) || total <= 0) {
                 total = 32;
                 attended = Math.round((overallPercent / 100) * total);
               }
+              if (isNaN(attended) || attended < 0) attended = 0;
+              if (total < attended) total = attended;
+
+              const calculatedPct = total > 0 ? parseFloat(((attended / total) * 100).toFixed(1)) : overallPercent;
 
               return {
-                id: code.toLowerCase(),
+                id: (code.toLowerCase().replace(/[^a-z0-9]/g, '-') || `sub-${idx + 1}`),
                 code,
                 name,
-                shortName: name.length > 18 ? name.slice(0, 16) + '…' : name,
+                shortName: meta?.shortName || (name.length > 18 ? name.slice(0, 16) + '…' : name) || code,
                 attended,
                 total,
-                percentage: parseFloat(overallPercent.toFixed(1)),
+                percentage: calculatedPct,
                 lecturePercent,
                 tutorialPercent,
                 practicalPercent,
-                credits: item.credits ? parseInt(item.credits) : 4,
-                room: item.room || 'LT-1',
+                credits: item.credits ? parseInt(item.credits, 10) : (meta?.credits || 4),
+                faculty: String(item.faculty || item.facultyname || 'Dept. of CSE').trim(),
+                room: String(item.room || meta?.room || 'LT-1').trim(),
                 hasLecture: !!item.Lsubjectcomponentid,
                 hasTutorial: !!item.Tsubjectcomponentid,
                 hasPractical: !!item.Psubjectcomponentid,
               };
             });
-            break;
+
+            // If we successfully populated subjects with data, finish loop
+            if (subjects.length > 0) {
+              break;
+            }
           }
         } catch (semErr) {
           console.warn(`[Webportal Semester ${sem.registrationcode}]`, semErr.message);
