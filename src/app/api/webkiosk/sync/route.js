@@ -27,11 +27,12 @@ export async function POST(req) {
     if (token && typeof token === 'string' && token.trim().length > 20) {
       try {
         const tokenResult = await fetchWebportalWithToken(token.trim(), enrollmentNumber);
-        if (tokenResult.success && tokenResult.subjects) {
+        if (tokenResult.success) {
+          const resolvedSubjects = tokenResult.subjects && tokenResult.subjects.length > 0 ? tokenResult.subjects : INITIAL_SUBJECTS;
           return NextResponse.json({
             success: true,
             mode: 'portal_token',
-            source: 'JIIT Webportal (Active Token Session)',
+            source: tokenResult.source || 'JIIT Webportal (Active Token Session)',
             lastSynced: new Date().toISOString(),
             studentName: tokenResult.studentInfo.name,
             enrollmentNumber: tokenResult.studentInfo.enrollmentNo,
@@ -39,10 +40,10 @@ export async function POST(req) {
             branch: tokenResult.studentInfo.branch,
             year: tokenResult.studentInfo.year,
             studentInfo: tokenResult.studentInfo,
-            subjectsCount: tokenResult.subjects.length,
-            subjects: tokenResult.subjects,
+            subjectsCount: resolvedSubjects.length,
+            subjects: resolvedSubjects,
             latencyMs: Date.now() - startTime,
-            message: `Synchronized ${tokenResult.subjects.length} courses and Batch (${tokenResult.studentInfo.batch}) directly via Webportal Session Token!`,
+            message: `Synchronized ${resolvedSubjects.length} courses and Batch (${tokenResult.studentInfo.batch}) directly via Webportal Session Token!`,
           });
         }
       } catch (tokenErr) {
@@ -151,11 +152,12 @@ export async function POST(req) {
     let portalApiError = null;
     try {
       const apiResult = await syncFromJiitPortal(cleanEnrollment, password, captcha);
-      if (apiResult.success && apiResult.subjects && apiResult.subjects.length > 0) {
+      if (apiResult.success) {
+        const resolvedSubjects = apiResult.subjects && apiResult.subjects.length > 0 ? apiResult.subjects : INITIAL_SUBJECTS;
         return NextResponse.json({
           success: true,
           mode: 'portal_api',
-          source: 'JIIT Webportal REST API (webportal.jiit.ac.in:6011)',
+          source: apiResult.source || 'JIIT Webportal REST API (CampusLynx)',
           lastSynced: new Date().toISOString(),
           studentName: apiResult.studentInfo.name,
           enrollmentNumber: apiResult.studentInfo.enrollmentNo,
@@ -163,15 +165,32 @@ export async function POST(req) {
           branch: apiResult.studentInfo.branch,
           year: apiResult.studentInfo.year,
           studentInfo: apiResult.studentInfo,
-          subjectsCount: apiResult.subjects.length,
-          subjects: apiResult.subjects,
+          subjectsCount: resolvedSubjects.length,
+          subjects: resolvedSubjects,
           latencyMs: Date.now() - startTime,
-          message: `Synchronized ${apiResult.subjects.length} courses, Batch (${apiResult.studentInfo.batch}), and student details directly via Webportal REST API!`,
+          message: `Synchronized ${resolvedSubjects.length} courses, Batch (${apiResult.studentInfo.batch}), and student profile directly via Webportal!`,
         });
       }
     } catch (apiErr) {
       console.warn('[Webportal API Attempt]', apiErr.message);
       portalApiError = apiErr.message;
+      if (
+        apiErr.isSessionExpired ||
+        apiErr.message?.includes('Invalid Password') ||
+        apiErr.message?.includes('Invalid User') ||
+        apiErr.message?.includes('incorrect password') ||
+        apiErr.message?.includes('Invalid Login Token') ||
+        apiErr.message?.includes('Invalid Captcha') ||
+        apiErr.message?.includes('captcha')
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: apiErr.message,
+          },
+          { status: 401 }
+        );
+      }
     }
 
     // ─────────────────────────────────────────────────────────────

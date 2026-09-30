@@ -1,7 +1,13 @@
 import crypto from 'crypto';
 import { getCourseMetadata } from './webkioskParser.js';
 
-const API_BASE_URL = 'https://webportal.jiit.ac.in:6011/StudentPortalAPI';
+export const PORTAL_BASE_URLS = [
+  'https://jiit-proxy-4.onrender.com/proxy',
+  'https://jiit-proxy-3.onrender.com/proxy',
+  'https://jiit-proxy-5.onrender.com/proxy',
+  'https://webportal.jiit.ac.in:6011/StudentPortalAPI',
+];
+
 const IV = Buffer.from('dcek9wb8frty1pnm', 'utf8');
 const DEFAULT_CAPTCHA = { captcha: 'phw5n', hidden: 'gmBctEffdSg=' };
 
@@ -9,7 +15,7 @@ const DEFAULT_CAPTCHA = { captcha: 'phw5n', hidden: 'gmBctEffdSg=' };
  * Generates the daily date sequence used in AES key derivation.
  * Resets every day at 00:00 hrs IST.
  */
-function generateDateSeq(date = new Date()) {
+export function generateDateSeq(date = new Date()) {
   const day = String(date.getDate()).padStart(2, '0');
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const year = String(date.getFullYear()).slice(2);
@@ -20,7 +26,7 @@ function generateDateSeq(date = new Date()) {
 /**
  * Generates random alphanumeric sequence
  */
-function getRandomCharSeq(n) {
+export function getRandomCharSeq(n) {
   const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
   let res = '';
   for (let i = 0; i < n; i++) {
@@ -32,14 +38,14 @@ function getRandomCharSeq(n) {
 /**
  * Derives dynamic AES-128 key
  */
-function generateKey(date = new Date()) {
+export function generateKey(date = new Date()) {
   return Buffer.from('qa8y' + generateDateSeq(date) + 'ty1pn', 'utf8');
 }
 
 /**
  * Encrypts buffer with AES-128-CBC and PKCS7 padding
  */
-function encrypt(buffer) {
+export function encrypt(buffer) {
   const cipher = crypto.createCipheriv('aes-128-cbc', generateKey(), IV);
   return Buffer.concat([cipher.update(buffer), cipher.final()]);
 }
@@ -47,7 +53,7 @@ function encrypt(buffer) {
 /**
  * Decrypts buffer with AES-128-CBC
  */
-function decrypt(buffer) {
+export function decrypt(buffer) {
   const decipher = crypto.createDecipheriv('aes-128-cbc', generateKey(), IV);
   return Buffer.concat([decipher.update(buffer), decipher.final()]);
 }
@@ -77,56 +83,100 @@ export function deserializePayload(base64Payload) {
 }
 
 /**
- * Authenticated API Request Helper
+ * Reconstructs accurate class attended/total counts from attendance percentage.
+ * Exact algorithm used by JIIT Pulse.
+ */
+export function deriveCountFromPercentage(percentage) {
+  if (percentage == null || isNaN(percentage)) return null;
+  const p = parseFloat(percentage);
+  if (p === 100) return { attended: 1, total: 1 };
+  if (p === 0) return { attended: 0, total: 0 };
+
+  for (let t = 1; t <= 150; t++) {
+    const i = Math.round((t * p) / 100);
+    if (i >= 0 && i <= t && Math.abs(parseFloat(((i / t) * 100).toFixed(1)) - p) < 0.05) {
+      return { attended: i, total: t };
+    }
+  }
+
+  const fallbackTotal = 32;
+  return { attended: Math.round((p / 100) * fallbackTotal), total: fallbackTotal };
+}
+
+/**
+ * Authenticated API Request Helper with Proxy Failover
  */
 async function hitApi(endpoint, options = {}) {
   const { method = 'POST', body, token, headers = {}, timeoutMs = 8000 } = options;
+  let lastError = null;
 
-  const requestHeaders = {
-    'Content-Type': 'application/json',
-    'LocalName': generateLocalName(),
-    ...headers,
-  };
+  for (const baseUrl of PORTAL_BASE_URLS) {
+    try {
+      const localName = generateLocalName();
+      const requestHeaders = {
+        'Content-Type': 'application/json',
+        'LocalName': localName,
+        ...headers,
+      };
 
-  if (token) {
-    requestHeaders['Authorization'] = `Bearer ${token}`;
+      if (token) {
+        requestHeaders['Authorization'] = `Bearer ${token}`;
+      }
+
+      const res = await fetch(`${baseUrl}${endpoint}`, {
+        method,
+        headers: requestHeaders,
+        body: typeof body === 'object' ? JSON.stringify(body) : body,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      if (res.status === 401) {
+        const err = new Error('Webportal session expired (HTTP 401). Please re-authenticate.');
+        err.isSessionExpired = true;
+        throw err;
+      }
+
+      if (res.status === 513) {
+        throw new Error('JIIT Webportal server is temporarily unavailable (HTTP 513).');
+      }
+
+      const text = await res.text();
+      if (!text || !text.trim()) {
+        throw new Error(`Empty response from ${baseUrl}${endpoint} (HTTP ${res.status})`);
+      }
+
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error(`Invalid JSON received (${text.slice(0, 100)})`);
+      }
+
+      if (json.status && json.status.responseStatus === 'Failure') {
+        const errorDetails = Array.isArray(json.status.errors)
+          ? json.status.errors.join(', ')
+          : JSON.stringify(json.status.errors || json.status);
+        throw new Error(errorDetails || 'JIIT Webportal rejected request.');
+      }
+
+      return json;
+    } catch (err) {
+      lastError = err;
+      // Do not rotate proxy on invalid password or session expiration
+      if (
+        err.isSessionExpired ||
+        err.message?.includes('Invalid Password') ||
+        err.message?.includes('Invalid User') ||
+        err.message?.includes('incorrect password') ||
+        err.message?.includes('User not found')
+      ) {
+        throw err;
+      }
+      console.warn(`[Portal Failover] Proxy ${baseUrl} failed for ${endpoint} (${err.message}). Retrying...`);
+    }
   }
 
-  const res = await fetch(`${API_BASE_URL}${endpoint}`, {
-    method,
-    headers: requestHeaders,
-    body: typeof body === 'object' ? JSON.stringify(body) : body,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-
-  if (res.status === 401) {
-    throw new Error('Webportal session expired (HTTP 401). Please re-authenticate.');
-  }
-
-  if (res.status === 513) {
-    throw new Error('JIIT Webportal server is temporarily unavailable (HTTP 513).');
-  }
-
-  const text = await res.text();
-  if (!text || !text.trim()) {
-    throw new Error(`Empty response from Webportal ${endpoint} (HTTP ${res.status})`);
-  }
-
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(`Invalid JSON received from Webportal (${text.slice(0, 100)})`);
-  }
-
-  if (json.status && json.status.responseStatus === 'Failure') {
-    const errorDetails = Array.isArray(json.status.errors)
-      ? json.status.errors.join(', ')
-      : JSON.stringify(json.status.errors || json.status);
-    throw new Error(errorDetails || 'JIIT Webportal rejected request.');
-  }
-
-  return json;
+  throw lastError || new Error('All Webportal connection proxies failed.');
 }
 
 /**
@@ -137,7 +187,6 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
 
   // Decode JWT to extract user info if not provided
   let instituteId = cleanUser.startsWith('99') ? '11IN1902J000003' : '11IN1902J000001';
-  let memberType = 'S';
   let clientId = 'SOAU';
 
   try {
@@ -154,11 +203,10 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
     batch: '',
     branch: 'Computer Science & Engineering',
     year: '1st Year (Semester 1)',
-    campus: 'Jaypee Institute of Information Technology, Sector-128 Noida',
+    campus: cleanUser.startsWith('99') ? 'Jaypee Institute of Information Technology, Sector-62 Noida' : 'Jaypee Institute of Information Technology, Sector-128 Noida',
     collegeEmail: `${cleanUser || '241030188'}@mail.jiit.ac.in`,
     personalEmail: '',
     phone: '',
-    residence: '',
     fatherName: '',
     motherName: '',
   };
@@ -191,8 +239,12 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
     if (general.fathername) studentInfo.fatherName = general.fathername;
     if (general.mothername) studentInfo.motherName = general.mothername;
 
+    if (general.instituteid && general.instituteid !== 'JIIT') {
+      instituteId = general.instituteid;
+    }
+
     if (studentInfo.semester) {
-      const semNum = parseInt(studentInfo.semester);
+      const semNum = parseInt(studentInfo.semester, 10);
       const yearNum = Math.ceil(semNum / 2);
       studentInfo.year = `${yearNum}${yearNum === 1 ? 'st' : yearNum === 2 ? 'nd' : 'th'} Year (Semester ${semNum})`;
     }
@@ -207,8 +259,6 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
       method: 'POST',
       body: {
         instituteid: instituteId,
-        clientid: clientId,
-        membertype: memberType,
       },
       token,
     });
@@ -222,17 +272,21 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
       for (const sem of reversedSemesters) {
         try {
           const styNum = sem.stynumber || header.stynumber || studentInfo.semester || '1';
-          const attendPayload = serializePayload({
+          const regCode = sem.registrationcode || sem.registration_code;
+          const regId = sem.registrationid || sem.registration_id;
+
+          const encryptedPayload = serializePayload({
             clientid: clientId,
             instituteid: instituteId,
-            registrationcode: sem.registrationcode,
-            registrationid: sem.registrationid,
+            registrationcode: regCode,
+            registrationid: regId,
             stynumber: styNum,
           });
 
+          // In JIIT Pulse: body is passed as { json: encryptedBase64 }
           const attendResp = await hitApi('/StudentClassAttendance/getstudentattendancedetail', {
             method: 'POST',
-            body: attendPayload,
+            body: JSON.stringify(encryptedPayload),
             token,
           });
 
@@ -251,10 +305,18 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
               let total = parseInt(item.totalclass || item.totalclasses || item.Ltotal || item.total || 0, 10);
               let attended = parseInt(item.totalpresent || item.present || item.Lattended || item.attended || 0, 10);
 
+              // Derive exact count from percentage if class totals are omitted by portal
               if (isNaN(total) || total <= 0) {
-                total = 32;
-                attended = Math.round((overallPercent / 100) * total);
+                const derived = deriveCountFromPercentage(overallPercent);
+                if (derived) {
+                  attended = derived.attended;
+                  total = derived.total;
+                } else {
+                  total = 32;
+                  attended = Math.round((overallPercent / 100) * total);
+                }
               }
+
               if (isNaN(attended) || attended < 0) attended = 0;
               if (total < attended) total = attended;
 
@@ -280,7 +342,6 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
               };
             });
 
-            // If we successfully populated subjects with data, finish loop
             if (subjects.length > 0) {
               break;
             }
@@ -294,6 +355,7 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
     console.warn('[Webportal Attendance Error]', err.message);
   }
 
+  // Derive Batch from enrollment if not returned by personal information
   if (!studentInfo.batch && studentInfo.enrollmentNo) {
     const yr = studentInfo.enrollmentNo.startsWith('24') ? '128-B' : 'B';
     const lastDigits = parseInt(studentInfo.enrollmentNo.slice(-2), 10) || 1;
@@ -302,14 +364,14 @@ export async function fetchWebportalWithToken(token, clientEnrollment = '') {
 
   return {
     success: true,
-    source: 'JIIT Webportal REST API (Active Token Session)',
+    source: 'JIIT Student Webportal (CampusLynx)',
     studentInfo,
     subjects,
   };
 }
 
 /**
- * Full Login to Webportal with Captcha verification
+ * Full Login to Webportal with Captcha verification and Proxy Failover
  */
 export async function syncFromJiitPortal(enrollmentNumber, password, userCaptcha = null) {
   const cleanUser = enrollmentNumber.trim();
@@ -320,15 +382,16 @@ export async function syncFromJiitPortal(enrollmentNumber, password, userCaptcha
       ? { captcha: userCaptcha.captcha.trim(), hidden: userCaptcha.hidden }
       : DEFAULT_CAPTCHA;
 
-  const pretokenBody = serializePayload({
+  const pretokenEncrypted = serializePayload({
     username: cleanUser,
     usertype: 'S',
     captcha: captchaPayload,
   });
 
+  // JIIT Pulse: body is sent as raw base64 string
   const pretokenResp = await hitApi('/token/pretoken-check', {
     method: 'POST',
-    body: pretokenBody,
+    body: pretokenEncrypted,
   });
 
   if (!pretokenResp?.response?.otppwd) {
@@ -344,15 +407,19 @@ export async function syncFromJiitPortal(enrollmentNumber, password, userCaptcha
     random: pretokenResp.response.random || '',
   };
 
+  const tokenEncrypted = serializePayload(tokenPayload);
+
+  // JIIT Pulse: body is sent as raw base64 string
   const tokenResp = await hitApi('/token/generatewebtoken', {
     method: 'POST',
-    body: serializePayload(tokenPayload),
+    body: tokenEncrypted,
   });
 
   const regdata = tokenResp?.response?.regdata;
   if (!regdata || !regdata.token) {
-    throw new Error('Webportal did not return authentication token.');
+    throw new Error('Webportal did not return an authentication session token.');
   }
 
   return fetchWebportalWithToken(regdata.token, cleanUser);
 }
+
